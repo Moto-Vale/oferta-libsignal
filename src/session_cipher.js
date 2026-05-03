@@ -143,6 +143,7 @@ class SessionCipher {
         for (const session of sessions) {
             let plaintext; 
             try {
+                await new Promise(resolve => setImmediate(resolve));
                 plaintext = await this.doDecryptWhisperMessage(data, session);
                 session.indexInfo.used = Date.now();
                 return {
