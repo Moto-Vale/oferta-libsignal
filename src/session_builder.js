@@ -1,6 +1,8 @@
 
 'use strict';
 
+const { Worker } = require('worker_threads');
+const path = require('path');
 const BaseKeyType = require('./base_key_type');
 const ChainType = require('./chain_type');
 const SessionRecord = require('./session_record');
@@ -8,6 +10,39 @@ const crypto = require('./crypto');
 const curve = require('./curve');
 const errors = require('./errors');
 const queueJob = require('./queue_job');
+
+// Worker persistente para operações CPU-bound de curva/crypto.
+let _cryptoWorker = null;
+const _cryptoPending = new Map();
+let _cryptoReqId = 0;
+
+function _getCryptoWorker() {
+    if (!_cryptoWorker) {
+        _cryptoWorker = new Worker(path.join(__dirname, 'crypto_worker.js'));
+        _cryptoWorker.on('message', ({ id, result, error }) => {
+            const pending = _cryptoPending.get(id);
+            if (!pending) return;
+            _cryptoPending.delete(id);
+            if (error) pending.reject(new Error(error));
+            else pending.resolve(result);
+        });
+        _cryptoWorker.on('error', err => {
+            _cryptoWorker = null;
+            for (const { reject } of _cryptoPending.values()) reject(err);
+            _cryptoPending.clear();
+        });
+        _cryptoWorker.on('exit', () => { _cryptoWorker = null; });
+    }
+    return _cryptoWorker;
+}
+
+function _runInCryptoWorker(data) {
+    return new Promise((resolve, reject) => {
+        const id = ++_cryptoReqId;
+        _cryptoPending.set(id, { resolve, reject });
+        _getCryptoWorker().postMessage({ id, data });
+    });
+}
 
 class SessionBuilder {
 
@@ -19,34 +54,74 @@ class SessionBuilder {
     async initOutgoing(device) {
         const fqAddr = this.addr.toString();
         return await queueJob(fqAddr, async () => {
-            if (!await this.storage.isTrustedIdentity(this.addr.id, device.identityKey)) {
+            // Dispara isTrustedIdentity e getOurIdentity em paralelo para minimizar latência de I/O.
+            const trustedPromise      = this.storage.isTrustedIdentity(this.addr.id, device.identityKey);
+            const ourIdentityPromise  = this.storage.getOurIdentity();
+
+            if (!await trustedPromise) {
                 throw new errors.UntrustedIdentityKeyError(this.addr.id, device.identityKey);
             }
-            curve.verifySignature(device.identityKey, device.signedPreKey.publicKey,
-                                  device.signedPreKey.signature, true);
-            const baseKey = await curve.generateKeyPair();
-            const devicePreKey = device.preKey && device.preKey.publicKey;
-            const session = await this.initSession(true, baseKey, undefined, device.identityKey,
-                                                   devicePreKey, device.signedPreKey.publicKey,
-                                                   device.registrationId);
+
+            const ourIdentityKey  = await ourIdentityPromise;
+            const devicePreKey    = device.preKey && device.preKey.publicKey;
+
+            // Executa todo o crypto CPU-bound no worker thread e carrega a sessão existente
+            // em paralelo, pois são operações independentes.
+            const [workerResult, record] = await Promise.all([
+                _runInCryptoWorker({
+                    ourIdentityPrivKey:  ourIdentityKey.privKey,
+                    theirIdentityPubKey: device.identityKey,
+                    theirSignedPubKey:   device.signedPreKey.publicKey,
+                    theirEphemeralPubKey: devicePreKey || null,
+                }),
+                this.storage.loadSession(fqAddr),
+            ]);
+
+            // Reconstrói Buffers (structured clone transforma Buffer em Uint8Array).
+            const baseKeyPub     = Buffer.from(workerResult.baseKeyPub);
+            const ratchetKeyPub  = Buffer.from(workerResult.ratchetKeyPub);
+            const ratchetKeyPriv = Buffer.from(workerResult.ratchetKeyPriv);
+
+            const session = SessionRecord.createEntry();
+            session.registrationId = device.registrationId;
+            session.currentRatchet = {
+                rootKey:               Buffer.from(workerResult.ratchetRootKey),
+                ephemeralKeyPair:      { pubKey: ratchetKeyPub, privKey: ratchetKeyPriv },
+                lastRemoteEphemeralKey: device.signedPreKey.publicKey,
+                previousCounter:       0,
+            };
+            session.indexInfo = {
+                created:           Date.now(),
+                used:              Date.now(),
+                remoteIdentityKey: device.identityKey,
+                baseKey:           baseKeyPub,
+                baseKeyType:       BaseKeyType.OURS,
+                closed:            -1,
+            };
+            session.addChain(ratchetKeyPub, {
+                messageKeys: {},
+                chainKey: { counter: -1, key: Buffer.from(workerResult.sendingChainKey) },
+                chainType: ChainType.SENDING,
+            });
             session.pendingPreKey = {
                 signedKeyId: device.signedPreKey.keyId,
-                baseKey: baseKey.pubKey
+                baseKey:     baseKeyPub,
             };
             if (device.preKey) {
                 session.pendingPreKey.preKeyId = device.preKey.keyId;
             }
-            let record = await this.storage.loadSession(fqAddr);
-            if (!record) {
-                record = new SessionRecord();
+
+            let finalRecord = record;
+            if (!finalRecord) {
+                finalRecord = new SessionRecord();
             } else {
-                const openSession = record.getOpenSession();
+                const openSession = finalRecord.getOpenSession();
                 if (openSession) {
-                    record.closeSession(openSession);
+                    finalRecord.closeSession(openSession);
                 }
             }
-            record.setSession(session);
-            await this.storage.storeSession(fqAddr, record);
+            finalRecord.setSession(session);
+            await this.storage.storeSession(fqAddr, finalRecord);
         });
     }
 
