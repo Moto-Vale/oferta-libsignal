@@ -12,11 +12,46 @@ const queueJob = require('./queue_job');
 let newrelic;
 try { newrelic = require('newrelic'); } catch (_) { newrelic = null; }
 
-function nrSegment(name, fn) {
+function withNewRelicSegment(name, fn) {
     if (newrelic && newrelic.startSegment) {
-        return newrelic.startSegment(`SessionBuilder/${name}`, true, fn);
+        return newrelic.startSegment(name, true, fn);
     }
     return fn();
+}
+
+function noticeNewRelicError(error, attrs) {
+    if (newrelic && newrelic.noticeError) {
+        newrelic.noticeError(error instanceof Error ? error : new Error(String(error)), attrs);
+    }
+}
+
+function recordNewRelicCustomEvent(eventType, attrs) {
+    if (newrelic && newrelic.recordCustomEvent) {
+        newrelic.recordCustomEvent(eventType, attrs);
+    }
+}
+
+async function trackInitOutgoingStep(baseAttrs, step, fn) {
+    const stepStartedAt = Date.now();
+    let stepSuccess = false;
+    let stepError;
+    try {
+        const result = await withNewRelicSegment(`SessionBuilder/initOutgoing/${step}`, fn);
+        stepSuccess = true;
+        return result;
+    } catch (error) {
+        stepError = error;
+        noticeNewRelicError(error, { ...baseAttrs, step });
+        throw error;
+    } finally {
+        recordNewRelicCustomEvent('SessionBuilderInitOutgoingStep', {
+            ...baseAttrs,
+            step,
+            success: stepSuccess,
+            duration_ms: Date.now() - stepStartedAt,
+            error_name: stepError instanceof Error ? stepError.name : undefined
+        });
+    }
 }
 
 class SessionBuilder {
@@ -29,41 +64,26 @@ class SessionBuilder {
     async initOutgoing(device) {
         const fqAddr = this.addr.toString();
         return await queueJob(fqAddr, async () => {
-            const t0 = Date.now();
+            const baseAttrs = { addr: fqAddr };
 
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.addr', fqAddr);
-
-            // 1. isTrustedIdentity
-            const trusted = await nrSegment('isTrustedIdentity', () =>
-                this.storage.isTrustedIdentity(this.addr.id, device.identityKey)
-            );
+            const trusted = await trackInitOutgoingStep(baseAttrs, 'isTrustedIdentity',
+                () => this.storage.isTrustedIdentity(this.addr.id, device.identityKey));
             if (!trusted) {
                 throw new errors.UntrustedIdentityKeyError(this.addr.id, device.identityKey);
             }
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.isTrustedIdentity', Date.now() - t0);
 
-            // 2. verifySignature
-            const t1 = Date.now();
-            await nrSegment('verifySignature', () =>
-                curve.verifySignature(device.identityKey, device.signedPreKey.publicKey,
-                                      device.signedPreKey.signature, true)
-            );
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.verifySignature', Date.now() - t1);
+            await trackInitOutgoingStep(baseAttrs, 'verifySignature',
+                () => curve.verifySignature(device.identityKey, device.signedPreKey.publicKey,
+                                            device.signedPreKey.signature, true));
 
-            // 3. generateKeyPair
-            const t2 = Date.now();
-            const baseKey = await nrSegment('generateKeyPair', () => curve.generateKeyPair());
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.generateKeyPair', Date.now() - t2);
+            const baseKey = await trackInitOutgoingStep(baseAttrs, 'generateKeyPair',
+                () => curve.generateKeyPair());
 
-            // 4. initSession
-            const t3 = Date.now();
             const devicePreKey = device.preKey && device.preKey.publicKey;
-            const session = await nrSegment('initSession', () =>
-                this.initSession(true, baseKey, undefined, device.identityKey,
-                                 devicePreKey, device.signedPreKey.publicKey,
-                                 device.registrationId)
-            );
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.initSession', Date.now() - t3);
+            const session = await trackInitOutgoingStep(baseAttrs, 'initSession',
+                () => this.initSession(true, baseKey, undefined, device.identityKey,
+                                       devicePreKey, device.signedPreKey.publicKey,
+                                       device.registrationId));
 
             session.pendingPreKey = {
                 signedKeyId: device.signedPreKey.keyId,
@@ -73,11 +93,8 @@ class SessionBuilder {
                 session.pendingPreKey.preKeyId = device.preKey.keyId;
             }
 
-            // 5. loadSession
-            const t4 = Date.now();
-            let record = await nrSegment('loadSession', () => this.storage.loadSession(fqAddr));
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.loadSession', Date.now() - t4);
-
+            let record = await trackInitOutgoingStep(baseAttrs, 'loadSession',
+                () => this.storage.loadSession(fqAddr));
             if (!record) {
                 record = new SessionRecord();
             } else {
@@ -88,12 +105,8 @@ class SessionBuilder {
             }
             record.setSession(session);
 
-            // 6. storeSession
-            const t5 = Date.now();
-            await nrSegment('storeSession', () => this.storage.storeSession(fqAddr, record));
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.storeSession', Date.now() - t5);
-
-            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.total', Date.now() - t0);
+            await trackInitOutgoingStep(baseAttrs, 'storeSession',
+                () => this.storage.storeSession(fqAddr, record));
         });
     }
 
