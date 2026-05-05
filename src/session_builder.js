@@ -9,6 +9,16 @@ const curve = require('./curve');
 const errors = require('./errors');
 const queueJob = require('./queue_job');
 
+let newrelic;
+try { newrelic = require('newrelic'); } catch (_) { newrelic = null; }
+
+function nrSegment(name, fn) {
+    if (newrelic && newrelic.startSegment) {
+        return newrelic.startSegment(`SessionBuilder/${name}`, true, fn);
+    }
+    return fn();
+}
+
 class SessionBuilder {
 
     constructor(storage, protocolAddress) {
@@ -19,16 +29,42 @@ class SessionBuilder {
     async initOutgoing(device) {
         const fqAddr = this.addr.toString();
         return await queueJob(fqAddr, async () => {
-            if (!await this.storage.isTrustedIdentity(this.addr.id, device.identityKey)) {
+            const t0 = Date.now();
+
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.addr', fqAddr);
+
+            // 1. isTrustedIdentity
+            const trusted = await nrSegment('isTrustedIdentity', () =>
+                this.storage.isTrustedIdentity(this.addr.id, device.identityKey)
+            );
+            if (!trusted) {
                 throw new errors.UntrustedIdentityKeyError(this.addr.id, device.identityKey);
             }
-            curve.verifySignature(device.identityKey, device.signedPreKey.publicKey,
-                                  device.signedPreKey.signature, true);
-            const baseKey = await curve.generateKeyPair();
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.isTrustedIdentity', Date.now() - t0);
+
+            // 2. verifySignature
+            const t1 = Date.now();
+            await nrSegment('verifySignature', () =>
+                curve.verifySignature(device.identityKey, device.signedPreKey.publicKey,
+                                      device.signedPreKey.signature, true)
+            );
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.verifySignature', Date.now() - t1);
+
+            // 3. generateKeyPair
+            const t2 = Date.now();
+            const baseKey = await nrSegment('generateKeyPair', () => curve.generateKeyPair());
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.generateKeyPair', Date.now() - t2);
+
+            // 4. initSession
+            const t3 = Date.now();
             const devicePreKey = device.preKey && device.preKey.publicKey;
-            const session = await this.initSession(true, baseKey, undefined, device.identityKey,
-                                                   devicePreKey, device.signedPreKey.publicKey,
-                                                   device.registrationId);
+            const session = await nrSegment('initSession', () =>
+                this.initSession(true, baseKey, undefined, device.identityKey,
+                                 devicePreKey, device.signedPreKey.publicKey,
+                                 device.registrationId)
+            );
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.initSession', Date.now() - t3);
+
             session.pendingPreKey = {
                 signedKeyId: device.signedPreKey.keyId,
                 baseKey: baseKey.pubKey
@@ -36,7 +72,12 @@ class SessionBuilder {
             if (device.preKey) {
                 session.pendingPreKey.preKeyId = device.preKey.keyId;
             }
-            let record = await this.storage.loadSession(fqAddr);
+
+            // 5. loadSession
+            const t4 = Date.now();
+            let record = await nrSegment('loadSession', () => this.storage.loadSession(fqAddr));
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.loadSession', Date.now() - t4);
+
             if (!record) {
                 record = new SessionRecord();
             } else {
@@ -46,7 +87,13 @@ class SessionBuilder {
                 }
             }
             record.setSession(session);
-            await this.storage.storeSession(fqAddr, record);
+
+            // 6. storeSession
+            const t5 = Date.now();
+            await nrSegment('storeSession', () => this.storage.storeSession(fqAddr, record));
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.storeSession', Date.now() - t5);
+
+            if (newrelic) newrelic.addCustomAttribute('initOutgoing.ms.total', Date.now() - t0);
         });
     }
 
