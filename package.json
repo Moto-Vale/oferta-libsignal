@@ -20,7 +20,8 @@
     "protobufjs": "6.8.8"
   },
   "devDependencies": {
-    "eslint": "6.0.1"
+    "eslint": "6.0.1",
+    "mitata": "^1.0.34"
   },
   "gypfile": true,
   "engines": {
