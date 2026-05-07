@@ -216,6 +216,7 @@ class SessionRecord {
     constructor() {
         this.sessions = {};
         this.version = SESSION_RECORD_VERSION;
+        this._openSession = null;
     }
 
     serialize() {
@@ -244,8 +245,14 @@ class SessionRecord {
     }
 
     getOpenSession() {
+        if (this._openSession !== null && !this.isClosed(this._openSession)) {
+            return this._openSession;
+        }
+        // fallback scan (ex: após deserialização)
+        this._openSession = null;
         for (const session of Object.values(this.sessions)) {
             if (!this.isClosed(session)) {
+                this._openSession = session;
                 return session;
             }
         }
@@ -253,6 +260,9 @@ class SessionRecord {
 
     setSession(session) {
         this.sessions[session.indexInfo.baseKey.toString('base64')] = session;
+        if (!this.isClosed(session)) {
+            this._openSession = session;
+        }
     }
 
     getSessions() {
@@ -269,10 +279,14 @@ class SessionRecord {
             return;
         }
         session.indexInfo.closed = Date.now();
+        if (this._openSession === session) {
+            this._openSession = null;
+        }
     }
 
     openSession(session) {
         session.indexInfo.closed = -1;
+        this._openSession = session;
     }
 
     isClosed(session) {
@@ -302,6 +316,7 @@ class SessionRecord {
         for (const key of Object.keys(this.sessions)) {
             delete this.sessions[key];
         }
+        this._openSession = null;
     }
 }
 
