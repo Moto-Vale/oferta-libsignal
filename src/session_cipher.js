@@ -149,9 +149,9 @@ class SessionCipher {
                 const entry = session instanceof SessionRecord.SessionEntry ? session : SessionRecord.SessionEntry.deserialize(session);
 
                 const plaintext = await this.doDecryptWhisperMessage(data, entry);
-                session.indexInfo.used = Date.now();
+                entry.indexInfo.used = Date.now();
                 return {
-                    session,
+                    session: entry,
                     plaintext
                 };
             } catch(e) {

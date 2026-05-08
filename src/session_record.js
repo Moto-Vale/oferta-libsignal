@@ -231,30 +231,31 @@ class SessionRecord {
 
     if (data._sessions) {
       const sessions = data._sessions;
-      let closedEntries = null;
+      // let closedEntries = null;
 
       for (const key of Object.keys(sessions)) {
         const entry = sessions[key];
         if (entry.indexInfo.closed === -1) {
           obj.sessions[key] = SessionEntry.deserialize(entry);
         } else {
-          (closedEntries ??= []).push([entry.indexInfo.closed, key]);
+          // (closedEntries ??= []).push([entry.indexInfo.closed, key]);
+          obj.sessions[key] = entry; // lazy
         }
       }
 
-      if (closedEntries !== null) {
-        closedEntries.sort((a, b) => b[0] - a[0]);
+      // if (closedEntries !== null) {
+      //   closedEntries.sort((a, b) => b[0] - a[0]);
 
-        for (let i = 0; i < closedEntries.length; i++) {
-          const key = closedEntries[i][1];
-          const session = sessions[key];
-          if (i < 2) {
-            obj.sessions[key] = SessionEntry.deserialize(session); // eager
-          } else {
-            obj.sessions[key] = session; // lazy
-          }
-        }
-      }
+      //   for (let i = 0; i < closedEntries.length; i++) {
+      //     const key = closedEntries[i][1];
+      //     const session = sessions[key];
+      //     if (i < 2) {
+      //       obj.sessions[key] = SessionEntry.deserialize(session); // eager
+      //     } else {
+      //       obj.sessions[key] = session; // lazy
+      //     }
+      //   }
+      // }
     }
 
     return obj;

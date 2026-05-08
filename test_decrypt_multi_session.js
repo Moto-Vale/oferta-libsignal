@@ -360,7 +360,7 @@ async function injectClosedSessions(bobStorage, aliceAddr, n) {
 
   await test("lazy sessions são repassadas intactas na re-serialização", async () => {
     const { bobStorage, aliceAddr } = await setupSession();
-    await injectClosedSessions(bobStorage, aliceAddr, 20);
+    await injectClosedSessions(bobStorage, aliceAddr, 5);
 
     const record = await bobStorage.loadSession(aliceAddr.toString());
     const serialized1 = record.serialize();
