@@ -384,6 +384,53 @@ async function injectClosedSessions(bobStorage, aliceAddr, n) {
     }
   });
 
+  await test("decriptação em sessão lazy persiste sessão materializada no record", async () => {
+    const { bobStorage, aliceAddr, bobCipher } = await setupSession();
+    await injectClosedSessions(bobStorage, aliceAddr, 20);
+
+    const record = await bobStorage.loadSession(aliceAddr.toString());
+    const restored = SessionRecord.deserialize(record.serialize());
+    await bobStorage.storeSession(aliceAddr.toString(), restored);
+
+    const closedLazy = Object.entries(restored.sessions)
+      .filter(([_, s]) => s.indexInfo.closed !== -1 && !(s instanceof SessionEntry))
+      .sort((a, b) => b[1].indexInfo.closed - a[1].indexInfo.closed);
+
+    assert.ok(closedLazy.length > 0, "Deve haver ao menos uma sessão lazy");
+
+    const [lazyId, lazyRaw] = closedLazy[0];
+    const lazyBaseKey = Buffer.from(lazyRaw.indexInfo.baseKey, "base64");
+
+    const originalDoDecrypt = bobCipher.doDecryptWhisperMessage.bind(bobCipher);
+    bobCipher.doDecryptWhisperMessage = async function forcedDecrypt(_, session) {
+      if (session.indexInfo.baseKey.equals(lazyBaseKey)) {
+        session.currentRatchet.previousCounter = 777;
+        return Buffer.from("forced-plaintext");
+      }
+      throw new Error("forced-miss");
+    };
+
+    try {
+      const plaintext = await bobCipher.decryptWhisperMessage(Buffer.from([0x00]));
+      assert.strictEqual(plaintext.toString(), "forced-plaintext");
+    } finally {
+      bobCipher.doDecryptWhisperMessage = originalDoDecrypt;
+    }
+
+    const persisted = await bobStorage.loadSession(aliceAddr.toString());
+    const persistedSession = persisted.sessions[lazyId];
+
+    assert.ok(
+      persistedSession instanceof SessionEntry,
+      "Sessão lazy vencedora deve ser persistida como SessionEntry"
+    );
+    assert.strictEqual(
+      persistedSession.currentRatchet.previousCounter,
+      777,
+      "Mutação da sessão lazy deve persistir após storeRecord"
+    );
+  });
+
   console.log(`\n${passed} passed, ${failed} failed\n`);
   if (failed > 0) process.exit(1);
 })();
