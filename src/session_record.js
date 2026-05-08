@@ -234,10 +234,21 @@ class SessionRecord {
       let closedEntries = null;
       let openEntryLoaded = false;
 
+      // Prefer lastUsedSessionId for eager deserialization of the open session
+      const preferredOpenKey =
+        obj.lastUsedSessionId &&
+        sessions[obj.lastUsedSessionId] &&
+        sessions[obj.lastUsedSessionId].indexInfo.closed === -1
+          ? obj.lastUsedSessionId
+          : null;
+
       for (const key of Object.keys(sessions)) {
         const entry = sessions[key];
         if (entry.indexInfo.closed === -1) {
-          if (!openEntryLoaded) {
+          const shouldEager = preferredOpenKey !== null
+            ? key === preferredOpenKey
+            : !openEntryLoaded;
+          if (shouldEager) {
             obj.sessions[key] = SessionEntry.deserialize(entry);
             openEntryLoaded = true;
           } else {
@@ -350,23 +361,35 @@ class SessionRecord {
   }
 
   getSessions() {
-    let arr = Object.values(this.sessions);
+    // Materialize the open session before building the array so callers
+    // always receive a proper SessionEntry (not a raw POJO) as the first element.
     if (
       this.lastUsedSessionId &&
       this.sessions[this.lastUsedSessionId] &&
       !this.isClosed(this.sessions[this.lastUsedSessionId])
     ) {
-      arr = [
-        this.sessions[this.lastUsedSessionId],
-        ...arr.filter((s) => s !== this.sessions[this.lastUsedSessionId]),
-      ];
+      this._materializeSession(this.lastUsedSessionId);
     }
+
+    let arr = Object.values(this.sessions);
+
     // Return sessions ordered with most recently used first.
-    return arr.sort((a, b) => {
+    arr.sort((a, b) => {
       const aUsed = a.indexInfo.used || 0;
       const bUsed = b.indexInfo.used || 0;
       return aUsed === bUsed ? 0 : aUsed < bUsed ? 1 : -1;
     });
+
+    if (
+      this.lastUsedSessionId &&
+      this.sessions[this.lastUsedSessionId] &&
+      !this.isClosed(this.sessions[this.lastUsedSessionId])
+    ) {
+      const openSession = this.sessions[this.lastUsedSessionId];
+      arr = [openSession, ...arr.filter((s) => s !== openSession)];
+    }
+
+    return arr;
   }
 
   closeSession(session) {
