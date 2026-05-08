@@ -272,6 +272,7 @@ class SessionRecord {
     this.sessions = {};
     this.version = SESSION_RECORD_VERSION;
     this.lastUsedSessionId = null;
+    this._openSessionCache = null;
   }
 
   serialize() {
@@ -319,10 +320,15 @@ class SessionRecord {
    * @returns {SessionEntry|undefined} The open session, or undefined if there is no open session.
    */
   getOpenSession() {
+    if (this._openSessionCache) {
+      return this._openSessionCache;
+    }
+
     if (this.lastUsedSessionId && this.sessions[this.lastUsedSessionId]) {
       const rawSession = this.sessions[this.lastUsedSessionId];
       if (!this.isClosed(rawSession)) {
         const session = this._materializeSession(this.lastUsedSessionId);
+        this._openSessionCache = session;
         return session;
       }
     }
@@ -332,6 +338,7 @@ class SessionRecord {
       if (!this.isClosed(rawSession)) {
         this.lastUsedSessionId = key;
         const session = this._materializeSession(key);
+        this._openSessionCache = session;
         return session;
       }
     }
@@ -340,9 +347,8 @@ class SessionRecord {
   setSession(session) {
     const key = session.indexInfo.baseKey.toString("base64");
     this.sessions[key] = session;
-    if (!this.isClosed(session)) {
-      this.lastUsedSessionId = key;
-    }
+    this.lastUsedSessionId = key;
+    this._openSessionCache = session;
   }
 
   getSessions() {
@@ -372,11 +378,15 @@ class SessionRecord {
       return;
     }
     session.indexInfo.closed = Date.now();
+    if (this._openSessionCache === session) {
+      this._openSessionCache = null;
+    }
   }
 
   openSession(session) {
     session.indexInfo.closed = -1;
     this.lastUsedSessionId = session.indexInfo.baseKey.toString("base64");
+    this._openSessionCache = session;
   }
 
   isClosed(session) {
@@ -397,6 +407,11 @@ class SessionRecord {
           oldestSession = session;
         }
       }
+
+      if (this._openSessionCache === oldestSession) {
+        this._openSessionCache = null;
+      }
+
       if (oldestKey) {
         delete this.sessions[oldestKey];
       } else {
@@ -410,6 +425,7 @@ class SessionRecord {
       delete this.sessions[key];
     }
     this.lastUsedSessionId = null;
+    this._openSessionCache = null;
   }
 }
 

@@ -149,6 +149,37 @@ function buildFixture(closedCount) {
   return { _sessions: sessions, version: "v1" };
 }
 
+function _buildEntry(keyStr, closed) {
+  const entry = SessionRecord.createEntry();
+  entry.registrationId = 100;
+  entry.currentRatchet = {
+    ephemeralKeyPair: {
+      pubKey: Buffer.alloc(33, 1),
+      privKey: Buffer.alloc(32, 1),
+    },
+    lastRemoteEphemeralKey: Buffer.alloc(33, 2),
+    previousCounter: 0,
+    rootKey: Buffer.alloc(32, 3),
+  };
+  entry.indexInfo = {
+    baseKey: Buffer.from(keyStr),
+    baseKeyType: 1,
+    closed: closed,
+    used: 1000,
+    created: 1000,
+    remoteIdentityKey: Buffer.alloc(33, 4),
+  };
+  return entry;
+}
+
+function _buildOpenEntry(keyStr) {
+  return _buildEntry(keyStr, -1);
+}
+
+function _buildClosedEntry(keyStr, closedAt) {
+  return _buildEntry(keyStr, closedAt || 1000);
+}
+
 let passed = 0;
 let failed = 0;
 
@@ -352,6 +383,145 @@ test("deleteAllSessions remove tudo", () => {
   record.deleteAllSessions();
   assert.strictEqual(Object.keys(record.sessions).length, 0);
   assert.strictEqual(record.getOpenSession(), undefined);
+});
+
+// ---------------------------------------------------------------------------
+console.log("\nSessionRecord — _openSessionCache (população)");
+// ---------------------------------------------------------------------------
+
+test("getOpenSession() popula o cache na primeira chamada", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  record._openSessionCache = null;
+  assert.strictEqual(record._openSessionCache, null);
+  const session = record.getOpenSession();
+  assert.ok(session);
+  assert.strictEqual(record._openSessionCache, session);
+});
+
+test("getOpenSession() retorna a mesma referência (cache hit)", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  const first = record.getOpenSession();
+  const second = record.getOpenSession();
+  assert.strictEqual(first, second);
+});
+
+test("setSession() preenche o cache quando a sessão está aberta", () => {
+  const record = new SessionRecord();
+  const entry = _buildOpenEntry("open_key");
+  record.setSession(entry);
+  assert.strictEqual(record._openSessionCache, entry);
+});
+
+test("setSession() altera o cache quando a sessão está fechada, mas foi usada recentemente", () => {
+  const record = new SessionRecord();
+  const entry = _buildClosedEntry("closed_key", 1000);
+  record.setSession(entry);
+  assert.strictEqual(record._openSessionCache, entry);
+});
+
+test("openSession() preenche o cache", () => {
+  const record = new SessionRecord();
+  const entry = _buildClosedEntry("some_key", 1000);
+  record.sessions[Buffer.from("some_key").toString("base64")] = entry;
+  record.openSession(entry);
+  assert.strictEqual(record._openSessionCache, entry);
+});
+
+// ---------------------------------------------------------------------------
+console.log("\nSessionRecord — _openSessionCache (deleção)");
+// ---------------------------------------------------------------------------
+
+test("closeSession() limpa o cache quando a sessão fechada é a cacheada", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  const open = record.getOpenSession();
+  assert.strictEqual(record._openSessionCache, open);
+  record.closeSession(open);
+  assert.strictEqual(record._openSessionCache, null);
+});
+
+test("closeSession() NÃO limpa o cache ao fechar uma sessão diferente", () => {
+  const record = new SessionRecord();
+  const openEntry = _buildOpenEntry("open_key");
+  const otherEntry = _buildOpenEntry("other_key");
+  record.setSession(openEntry);
+  record.sessions[Buffer.from("other_key").toString("base64")] = otherEntry;
+  record._openSessionCache = openEntry;
+  record.closeSession(otherEntry);
+  assert.strictEqual(record._openSessionCache, openEntry);
+});
+
+test("deleteAllSessions() limpa o cache", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  record.getOpenSession();
+  assert.ok(record._openSessionCache);
+  record.deleteAllSessions();
+  assert.strictEqual(record._openSessionCache, null);
+});
+
+test("removeOldSessions() limpa o cache se a sessão removida era a cacheada", () => {
+  const record = new SessionRecord();
+  for (let i = 0; i < 40; i++) {
+    const entry = _buildClosedEntry(`closed_${i}`, 1000 + i * 1000);
+    record.sessions[`closed_${i}`] = entry;
+  }
+  const openEntry = _buildOpenEntry("open_key");
+  record.setSession(openEntry);
+  // Força o cache a apontar para a sessão mais antiga (situação defensiva)
+  const oldestEntry = record.sessions["closed_0"];
+  record._openSessionCache = oldestEntry;
+  record.removeOldSessions();
+  assert.ok(!record.sessions["closed_0"]);
+  assert.strictEqual(record._openSessionCache, null);
+});
+
+test("removeOldSessions() NÃO limpa o cache quando a sessão removida não é a cacheada", () => {
+  const record = new SessionRecord();
+  for (let i = 0; i < 40; i++) {
+    const entry = _buildClosedEntry(`closed_${i}`, 1000 + i * 1000);
+    record.sessions[`closed_${i}`] = entry;
+  }
+  const openEntry = _buildOpenEntry("open_key");
+  record.setSession(openEntry);
+  assert.strictEqual(record._openSessionCache, openEntry);
+  record.removeOldSessions();
+  assert.strictEqual(record._openSessionCache, openEntry);
+});
+
+// ---------------------------------------------------------------------------
+console.log("\nSessionRecord — _openSessionCache (reatribuição)");
+// ---------------------------------------------------------------------------
+
+test("getOpenSession() encontra nova sessão após cache limpo por closeSession()", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  const open = record.getOpenSession();
+  record.closeSession(open);
+  assert.strictEqual(record._openSessionCache, null);
+  const newEntry = _buildOpenEntry("new_open_key");
+  record.setSession(newEntry);
+  const found = record.getOpenSession();
+  assert.strictEqual(found, newEntry);
+  assert.strictEqual(record._openSessionCache, newEntry);
+});
+
+test("setSession() reatribui o cache ao inserir nova sessão aberta", () => {
+  const record = SessionRecord.deserialize(FIXTURE);
+  const firstOpen = record.getOpenSession();
+  const newEntry = _buildOpenEntry("new_key");
+  record.setSession(newEntry);
+  assert.strictEqual(record._openSessionCache, newEntry);
+  assert.notStrictEqual(record._openSessionCache, firstOpen);
+});
+
+test("openSession() reatribui o cache para uma sessão diferente", () => {
+  const record = new SessionRecord();
+  const entry1 = _buildOpenEntry("key1");
+  const entry2 = _buildClosedEntry("key2", 1000);
+  record.setSession(entry1);
+  record.sessions[Buffer.from("key2").toString("base64")] = entry2;
+  assert.strictEqual(record._openSessionCache, entry1);
+  record.openSession(entry2);
+  assert.strictEqual(record._openSessionCache, entry2);
+  assert.notStrictEqual(record._openSessionCache, entry1);
 });
 
 // ---------------------------------------------------------------------------
