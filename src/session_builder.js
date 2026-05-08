@@ -110,6 +110,12 @@ class SessionBuilder {
         });
     }
 
+    /**
+     * Initialize a session record for an incoming PreKey message. This will verify the message, and if valid
+     * @param {SessionRecord} record The existing session record for this address, if any
+     * @param {PreKeyWhisperMessage} message The incoming PreKey message
+     * @returns {Promise<number|undefined>} The PreKey ID we used for this session, if any, which lets the caller know which PreKey to mark as published
+     */
     async initIncoming(record, message) {
         const fqAddr = this.addr.toString();
         if (!await this.storage.isTrustedIdentity(fqAddr, message.identityKey)) {

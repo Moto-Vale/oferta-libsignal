@@ -90,6 +90,9 @@ class SessionEntry {
     return data;
   }
 
+  /**
+   * @returns {SessionEntry}
+   */
   static deserialize(data) {
     const obj = new this();
     obj.registrationId = data.registrationId;
@@ -221,6 +224,9 @@ class SessionRecord {
     }
   }
 
+  /**
+   * @returns {SessionRecord}
+   */
   static deserialize(data) {
     if (data.version !== SESSION_RECORD_VERSION) {
       this.migrate(data);
@@ -309,6 +315,9 @@ class SessionRecord {
     return session;
   }
 
+  /**
+   * @returns {SessionEntry|undefined} The open session, or undefined if there is no open session.
+   */
   getOpenSession() {
     if (this.lastUsedSessionId && this.sessions[this.lastUsedSessionId]) {
       const rawSession = this.sessions[this.lastUsedSessionId];
@@ -337,15 +346,7 @@ class SessionRecord {
   }
 
   getSessions() {
-    if (
-      this.lastUsedSessionId &&
-      this.sessions[this.lastUsedSessionId] &&
-      !this.isClosed(this.sessions[this.lastUsedSessionId])
-    ) {
-      this._materializeSession(this.lastUsedSessionId);
-    }
-
-    let arr = Object.values(this.sessions);
+    const arr = Object.values(this.sessions);
 
     // Return sessions ordered with most recently used first.
     arr.sort((a, b) => {
@@ -359,7 +360,7 @@ class SessionRecord {
       this.sessions[this.lastUsedSessionId] &&
       !this.isClosed(this.sessions[this.lastUsedSessionId])
     ) {
-      const openSession = this.sessions[this.lastUsedSessionId];
+      const openSession = this._materializeSession(this.lastUsedSessionId);
       arr = [openSession, ...arr.filter((s) => s !== openSession)];
     }
 

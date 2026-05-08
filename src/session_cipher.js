@@ -45,6 +45,10 @@ class SessionCipher {
         return `<SessionCipher(${this.addr.toString()})>`;
     }
 
+    /**
+     * Get the session record for this address.  This is not guaranteed to be up to date, and should not be modified or stored.
+     * @returns {Promise<SessionRecord>}
+     */
     async getRecord() {
         const record = await this.storage.loadSession(this.addr.toString());
         if (record && !(record instanceof SessionRecord)) {
@@ -55,7 +59,6 @@ class SessionCipher {
 
     async storeRecord(record) {
         record.removeOldSessions();
-        record._openSession = null;  // Clear cache to avoid stale session references
         await this.storage.storeSession(this.addr.toString(), record);
     }
 
