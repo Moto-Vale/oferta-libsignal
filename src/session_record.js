@@ -234,26 +234,11 @@ class SessionRecord {
       let closedEntries = null;
       let openEntryLoaded = false;
 
-      // Prefer lastUsedSessionId for eager deserialization of the open session
-      const preferredOpenKey =
-        obj.lastUsedSessionId &&
-        sessions[obj.lastUsedSessionId] &&
-        sessions[obj.lastUsedSessionId].indexInfo.closed === -1
-          ? obj.lastUsedSessionId
-          : null;
-
       for (const key of Object.keys(sessions)) {
         const entry = sessions[key];
-        if (entry.indexInfo.closed === -1) {
-          const shouldEager = preferredOpenKey !== null
-            ? key === preferredOpenKey
-            : !openEntryLoaded;
-          if (shouldEager) {
-            obj.sessions[key] = SessionEntry.deserialize(entry);
-            openEntryLoaded = true;
-          } else {
-            obj.sessions[key] = entry; // lazy for inconsistent multi-open records
-          }
+        if (entry.indexInfo.closed === -1 && !openEntryLoaded) {
+          obj.sessions[key] = SessionEntry.deserialize(entry);
+          openEntryLoaded = true;
         } else {
           (closedEntries ??= []).push([entry.indexInfo.closed, key]);
         }
@@ -266,9 +251,9 @@ class SessionRecord {
           const key = closedEntries[i][1];
           const session = sessions[key];
           if (i < 2) {
-            obj.sessions[key] = SessionEntry.deserialize(session); // eager
+            obj.sessions[key] = SessionEntry.deserialize(session);
           } else {
-            obj.sessions[key] = session; // lazy
+            obj.sessions[key] = session;
           }
         }
       }
@@ -281,7 +266,6 @@ class SessionRecord {
     this.sessions = {};
     this.version = SESSION_RECORD_VERSION;
     this.lastUsedSessionId = null;
-    this._openSession = null;
   }
 
   serialize() {
@@ -326,26 +310,19 @@ class SessionRecord {
   }
 
   getOpenSession() {
-    if (this._openSession !== null && !this.isClosed(this._openSession)) {
-      return this._openSession;
-    }
-    this._openSession = null;
-
     if (this.lastUsedSessionId && this.sessions[this.lastUsedSessionId]) {
       const rawSession = this.sessions[this.lastUsedSessionId];
       if (!this.isClosed(rawSession)) {
         const session = this._materializeSession(this.lastUsedSessionId);
-        this._openSession = session;
         return session;
       }
     }
-    // fallback scan (ex: após deserialização sem lastUsedSessionId)
+
     for (const key in this.sessions) {
       const rawSession = this.sessions[key];
       if (!this.isClosed(rawSession)) {
         this.lastUsedSessionId = key;
         const session = this._materializeSession(key);
-        this._openSession = session;
         return session;
       }
     }
@@ -356,13 +333,10 @@ class SessionRecord {
     this.sessions[key] = session;
     if (!this.isClosed(session)) {
       this.lastUsedSessionId = key;
-      this._openSession = session;
     }
   }
 
   getSessions() {
-    // Materialize the open session before building the array so callers
-    // always receive a proper SessionEntry (not a raw POJO) as the first element.
     if (
       this.lastUsedSessionId &&
       this.sessions[this.lastUsedSessionId] &&
@@ -397,14 +371,10 @@ class SessionRecord {
       return;
     }
     session.indexInfo.closed = Date.now();
-    if (this._openSession === session) {
-      this._openSession = null;
-    }
   }
 
   openSession(session) {
     session.indexInfo.closed = -1;
-    this._openSession = session;
     this.lastUsedSessionId = session.indexInfo.baseKey.toString("base64");
   }
 
@@ -438,7 +408,6 @@ class SessionRecord {
     for (const key of Object.keys(this.sessions)) {
       delete this.sessions[key];
     }
-    this._openSession = null;
     this.lastUsedSessionId = null;
   }
 }
