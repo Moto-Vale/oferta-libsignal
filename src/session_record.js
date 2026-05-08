@@ -352,7 +352,7 @@ class SessionRecord {
   }
 
   getSessions() {
-    const arr = Object.values(this.sessions);
+    let arr = Object.values(this.sessions);
 
     // Return sessions ordered with most recently used first.
     arr.sort((a, b) => {
