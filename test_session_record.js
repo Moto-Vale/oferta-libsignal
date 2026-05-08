@@ -190,6 +190,40 @@ test("haveOpenSession() retorna true", () => {
   assert.strictEqual(record.haveOpenSession(), true);
 });
 
+test("registro inconsistente com múltiplas abertas mantém getOpenSession funcional", () => {
+  const data = buildFixture(5);
+  data._sessions["open_session_2"] = {
+    registrationId: 188,
+    currentRatchet: {
+      ephemeralKeyPair: {
+        pubKey: Buffer.alloc(33, 7).toString("base64"),
+        privKey: Buffer.alloc(32, 7).toString("base64"),
+      },
+      lastRemoteEphemeralKey: Buffer.alloc(33, 1).toString("base64"),
+      previousCounter: 0,
+      rootKey: Buffer.alloc(32, 2).toString("base64"),
+    },
+    indexInfo: {
+      baseKey: "open_session_2",
+      baseKeyType: 1,
+      closed: -1,
+      used: 9999998,
+      created: 9999998,
+      remoteIdentityKey: Buffer.alloc(33, 3).toString("base64"),
+    },
+    _chains: {},
+    pendingPreKey: { signedKeyId: 1, baseKey: "open_session_2" },
+  };
+
+  const record = SessionRecord.deserialize(data);
+  const open = record.getOpenSession();
+  assert.ok(open, "deveria haver sessão aberta");
+  assert.ok(
+    open instanceof SessionRecord.SessionEntry,
+    "getOpenSession deve sempre retornar SessionEntry materializada"
+  );
+});
+
 test("buffers são Buffer (não string) após deserialize", () => {
   const record = SessionRecord.deserialize(FIXTURE);
   const open = record.getOpenSession();

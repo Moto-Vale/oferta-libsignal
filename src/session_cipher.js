@@ -168,6 +168,7 @@ class SessionCipher {
                 throw new errors.SessionError("No session record");
             }
             const result = await this.decryptWithSessions(data, record.getSessions());
+            record.setSession(result.session);
             const remoteIdentityKey = result.session.indexInfo.remoteIdentityKey;
             if (!await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey)) {
                 throw new errors.UntrustedIdentityKeyError(this.addr.id, remoteIdentityKey);

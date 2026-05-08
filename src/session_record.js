@@ -231,31 +231,36 @@ class SessionRecord {
 
     if (data._sessions) {
       const sessions = data._sessions;
-      // let closedEntries = null;
+      let closedEntries = null;
+      let openEntryLoaded = false;
 
       for (const key of Object.keys(sessions)) {
         const entry = sessions[key];
         if (entry.indexInfo.closed === -1) {
-          obj.sessions[key] = SessionEntry.deserialize(entry);
+          if (!openEntryLoaded) {
+            obj.sessions[key] = SessionEntry.deserialize(entry);
+            openEntryLoaded = true;
+          } else {
+            obj.sessions[key] = entry; // lazy for inconsistent multi-open records
+          }
         } else {
-          // (closedEntries ??= []).push([entry.indexInfo.closed, key]);
-          obj.sessions[key] = entry; // lazy
+          (closedEntries ??= []).push([entry.indexInfo.closed, key]);
         }
       }
 
-      // if (closedEntries !== null) {
-      //   closedEntries.sort((a, b) => b[0] - a[0]);
+      if (closedEntries !== null) {
+        closedEntries.sort((a, b) => b[0] - a[0]);
 
-      //   for (let i = 0; i < closedEntries.length; i++) {
-      //     const key = closedEntries[i][1];
-      //     const session = sessions[key];
-      //     if (i < 2) {
-      //       obj.sessions[key] = SessionEntry.deserialize(session); // eager
-      //     } else {
-      //       obj.sessions[key] = session; // lazy
-      //     }
-      //   }
-      // }
+        for (let i = 0; i < closedEntries.length; i++) {
+          const key = closedEntries[i][1];
+          const session = sessions[key];
+          if (i < 2) {
+            obj.sessions[key] = SessionEntry.deserialize(session); // eager
+          } else {
+            obj.sessions[key] = session; // lazy
+          }
+        }
+      }
     }
 
     return obj;
@@ -289,16 +294,19 @@ class SessionRecord {
     return !!openSession && typeof openSession.registrationId === "number";
   }
 
-  getSession(key) {
-    assertBuffer(key);
-    const id = key.toString("base64");
+  _materializeSession(id) {
     let session = this.sessions[id];
-    
-    // Deserializa sessão fechada mais recente se ainda não tiver sido deserializada (lazy)
     if (session && !(session instanceof SessionEntry)) {
       session = SessionEntry.deserialize(session);
       this.sessions[id] = session;
     }
+    return session;
+  }
+
+  getSession(key) {
+    assertBuffer(key);
+    const id = key.toString("base64");
+    const session = this._materializeSession(id);
 
     if (session && session.indexInfo.baseKeyType === BaseKeyType.OURS) {
       throw new Error("Tried to lookup a session using our basekey");
@@ -313,17 +321,19 @@ class SessionRecord {
     this._openSession = null;
 
     if (this.lastUsedSessionId && this.sessions[this.lastUsedSessionId]) {
-      const session = this.sessions[this.lastUsedSessionId];
-      if (!this.isClosed(session)) {
+      const rawSession = this.sessions[this.lastUsedSessionId];
+      if (!this.isClosed(rawSession)) {
+        const session = this._materializeSession(this.lastUsedSessionId);
         this._openSession = session;
         return session;
       }
     }
     // fallback scan (ex: após deserialização sem lastUsedSessionId)
     for (const key in this.sessions) {
-      const session = this.sessions[key];
-      if (!this.isClosed(session)) {
+      const rawSession = this.sessions[key];
+      if (!this.isClosed(rawSession)) {
         this.lastUsedSessionId = key;
+        const session = this._materializeSession(key);
         this._openSession = session;
         return session;
       }
@@ -380,29 +390,24 @@ class SessionRecord {
   }
 
   removeOldSessions() {
-    if (Object.keys(this.sessions).length < CLOSED_SESSIONS_MAX) return;
-    const unusedSort = Object.values(this.sessions).sort((a, b) => {
-      const aClosed = a.indexInfo.closed || 0;
-      const bClosed = b.indexInfo.closed || 0;
-
-      if (aClosed === -1) return 1;
-      if (bClosed === -1) return -1;
-
-      return a.indexInfo.closed - b.indexInfo.closed;
-    });
-
-    const excededCount = unusedSort.length - CLOSED_SESSIONS_MAX;
-
-    if (excededCount <= 0) return;
-
-    for (let i = 0; i < excededCount; i++) {
-      const session = unusedSort[i];
-      const key = session.indexInfo.baseKey.toString("base64");
-
-      if (this._openSession === session) this._openSession = null;
-      if (this.lastUsedSessionId === key) this.lastUsedSessionId = null;
-
-      delete this.sessions[key];
+    while (Object.keys(this.sessions).length > CLOSED_SESSIONS_MAX) {
+      let oldestKey;
+      let oldestSession;
+      for (const [key, session] of Object.entries(this.sessions)) {
+        if (
+          session.indexInfo.closed !== -1 &&
+          (!oldestSession ||
+            session.indexInfo.closed < oldestSession.indexInfo.closed)
+        ) {
+          oldestKey = key;
+          oldestSession = session;
+        }
+      }
+      if (oldestKey) {
+        delete this.sessions[oldestKey];
+      } else {
+        throw new Error("Corrupt sessions object");
+      }
     }
   }
 
