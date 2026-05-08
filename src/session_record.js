@@ -225,13 +225,38 @@ class SessionRecord {
     if (data.version !== SESSION_RECORD_VERSION) {
       this.migrate(data);
     }
+
     const obj = new this();
     obj.lastUsedSessionId = data.lastUsedSessionId || null;
+
     if (data._sessions) {
-      for (const [key, entry] of Object.entries(data._sessions)) {
-        obj.sessions[key] = SessionEntry.deserialize(entry);
+      const sessions = data._sessions;
+      let closedEntries = null;
+
+      for (const key of Object.keys(sessions)) {
+        const entry = sessions[key];
+        if (entry.indexInfo.closed === -1) {
+          obj.sessions[key] = SessionEntry.deserialize(entry);
+        } else {
+          (closedEntries ??= []).push([entry.indexInfo.closed, key]);
+        }
+      }
+
+      if (closedEntries !== null) {
+        closedEntries.sort((a, b) => b[0] - a[0]);
+
+        for (let i = 0; i < closedEntries.length; i++) {
+          const key = closedEntries[i][1];
+          const session = sessions[key];
+          if (i < 2) {
+            obj.sessions[key] = SessionEntry.deserialize(session); // eager
+          } else {
+            obj.sessions[key] = session; // lazy
+          }
+        }
       }
     }
+
     return obj;
   }
 
@@ -245,7 +270,11 @@ class SessionRecord {
   serialize() {
     const _sessions = {};
     for (const [key, entry] of Object.entries(this.sessions)) {
-      _sessions[key] = entry.serialize();
+      if (entry instanceof SessionEntry) {
+        _sessions[key] = entry.serialize();
+      } else {
+        _sessions[key] = entry;
+      }
     }
     return {
       _sessions,
@@ -261,7 +290,15 @@ class SessionRecord {
 
   getSession(key) {
     assertBuffer(key);
-    const session = this.sessions[key.toString("base64")];
+    const id = key.toString("base64");
+    let session = this.sessions[id];
+    
+    // Deserializa sessão fechada mais recente se ainda não tiver sido deserializada (lazy)
+    if (session && !(session instanceof SessionEntry)) {
+      session = SessionEntry.deserialize(session);
+      this.sessions[id] = session;
+    }
+
     if (session && session.indexInfo.baseKeyType === BaseKeyType.OURS) {
       throw new Error("Tried to lookup a session using our basekey");
     }
@@ -273,7 +310,7 @@ class SessionRecord {
       return this._openSession;
     }
     this._openSession = null;
-    // Tenta lastUsedSessionId primeiro (O(1) após deserialização)
+
     if (this.lastUsedSessionId && this.sessions[this.lastUsedSessionId]) {
       const session = this.sessions[this.lastUsedSessionId];
       if (!this.isClosed(session)) {
@@ -293,9 +330,10 @@ class SessionRecord {
   }
 
   setSession(session) {
-    this.sessions[session.indexInfo.baseKey.toString("base64")] = session;
+    const key = session.indexInfo.baseKey.toString("base64");
+    this.sessions[key] = session;
     if (!this.isClosed(session)) {
-      this.lastUsedSessionId = session.indexInfo.baseKey.toString("base64");
+      this.lastUsedSessionId = key;
       this._openSession = session;
     }
   }
@@ -341,32 +379,29 @@ class SessionRecord {
   }
 
   removeOldSessions() {
-    while (Object.keys(this.sessions).length > CLOSED_SESSIONS_MAX) {
-      let oldestKey;
-      let oldestSession;
-      for (const [key, session] of Object.entries(this.sessions)) {
-        if (
-          session.indexInfo.closed !== -1 &&
-          (!oldestSession ||
-            session.indexInfo.closed < oldestSession.indexInfo.closed)
-        ) {
-          oldestKey = key;
-          oldestSession = session;
-        }
-      }
-      if (oldestKey) {
-        if (this._openSession === oldestSession) {
-          this._openSession = null;
-        }
+    if (Object.keys(this.sessions).length < CLOSED_SESSIONS_MAX) return;
+    const unusedSort = Object.values(this.sessions).sort((a, b) => {
+      const aClosed = a.indexInfo.closed || 0;
+      const bClosed = b.indexInfo.closed || 0;
 
-        if (this.lastUsedSessionId === oldestKey) {
-          this.lastUsedSessionId = null;
-        }
+      if (aClosed === -1) return 1;
+      if (bClosed === -1) return -1;
 
-        delete this.sessions[oldestKey];
-      } else {
-        throw new Error("Corrupt sessions object");
-      }
+      return a.indexInfo.closed - b.indexInfo.closed;
+    });
+
+    const excededCount = unusedSort.length - CLOSED_SESSIONS_MAX;
+
+    if (excededCount <= 0) return;
+
+    for (let i = 0; i < excededCount; i++) {
+      const session = unusedSort[i];
+      const key = session.indexInfo.baseKey.toString("base64");
+
+      if (this._openSession === session) this._openSession = null;
+      if (this.lastUsedSessionId === key) this.lastUsedSessionId = null;
+
+      delete this.sessions[key];
     }
   }
 
@@ -380,3 +415,4 @@ class SessionRecord {
 }
 
 module.exports = SessionRecord;
+module.exports.SessionEntry = SessionEntry;

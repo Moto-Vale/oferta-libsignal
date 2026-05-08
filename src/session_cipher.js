@@ -55,6 +55,7 @@ class SessionCipher {
 
     async storeRecord(record) {
         record.removeOldSessions();
+        record._openSession = null;  // Clear cache to avoid stale session references
         await this.storage.storeSession(this.addr.toString(), record);
     }
 
@@ -142,10 +143,12 @@ class SessionCipher {
         }   
         const errs = [];
         for (const session of sessions) {
-            let plaintext; 
             try {
-                 await new Promise(resolve => setImmediate(resolve));
-                plaintext = await this.doDecryptWhisperMessage(data, session);
+                await new Promise(resolve => setImmediate(resolve));
+
+                const entry = session instanceof SessionRecord.SessionEntry ? session : SessionRecord.SessionEntry.deserialize(session);
+
+                const plaintext = await this.doDecryptWhisperMessage(data, entry);
                 session.indexInfo.used = Date.now();
                 return {
                     session,
@@ -247,22 +250,23 @@ class SessionCipher {
         return plaintext;
     }
 
-    fillMessageKeys(chain, counter) {
-        if (chain.chainKey.counter >= counter) {
-            return;
-        }
-        if (counter - chain.chainKey.counter > 2000) {
-            throw new errors.SessionError('Over 2000 messages into the future!');
-        }
-        if (chain.chainKey.key === undefined) {
-            throw new errors.SessionError('Chain closed');
-        }
-        const key = chain.chainKey.key;
-        chain.messageKeys[chain.chainKey.counter + 1] = crypto.calculateMAC(key, Buffer.from([1]));
-        chain.chainKey.key = crypto.calculateMAC(key, Buffer.from([2]));
-        chain.chainKey.counter += 1;
-        return this.fillMessageKeys(chain, counter);
+   fillMessageKeys(chain, counter) {
+    while (chain.chainKey.counter < counter) {
+      if (counter - chain.chainKey.counter > 2000)
+        throw new errors.SessionError("Over 2000 messages into the future!");
+
+      if (chain.chainKey.key === undefined)
+        throw new errors.SessionError("Chain closed");
+
+      const key = chain.chainKey.key;
+      chain.messageKeys[chain.chainKey.counter + 1] = crypto.calculateMAC(
+        key,
+        Buffer.from([1]),
+      );
+      chain.chainKey.key = crypto.calculateMAC(key, Buffer.from([2]));
+      chain.chainKey.counter += 1;
     }
+  }
 
     async maybeStepRatchet(session, remoteKey, previousCounter) {
         if (session.getChain(remoteKey)) {
